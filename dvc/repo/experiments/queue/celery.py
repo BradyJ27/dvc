@@ -12,6 +12,7 @@ from funcy import first
 from dvc.daemon import daemonize
 from dvc.exceptions import DvcException
 from dvc.log import logger
+from dvc.repo.experiments.collect import collect
 from dvc.repo.experiments.exceptions import (
     UnresolvedQueueExpNamesError,
     UnresolvedRunningExpNamesError,
@@ -408,39 +409,62 @@ class LocalCeleryQueue(BaseStashQueue):
                 self._kill_entries(to_kill, True)
 
     def follow(self, entry: QueueEntry, encoding: Optional[str] = None):
+        # This should accept multiple revs and follow all by default
         for line in self.proc.follow(entry.stash_rev, encoding):
             ui.write(line, end="")
 
-    def logs(self, rev: str, encoding: Optional[str] = None, follow: bool = False):
-        queue_entry: Optional[QueueEntry] = self.match_queue_entry_by_name(
-            {rev}, self.iter_active(), self.iter_done()
-        ).get(rev)
-        if queue_entry is None:
-            if self.match_queue_entry_by_name({rev}, self.iter_queued()).get(rev):
-                raise DvcException(
-                    f"Experiment '{rev}' is in queue but has not been started"
+    # This should accept multiple revs and follow all by default
+    def logs(
+        self,
+        revs: Collection[str],
+        encoding: Optional[str] = None,
+        follow: bool = False,
+    ):
+        if not revs:
+            all_experiments = collect(self.repo, hide_failed=True)[1]
+            if not all_experiments.experiments:
+                raise DvcException("No experiments found")
+            revs = [
+                exp[0].rev
+                for exp in all_experiments.experiments
+                if exp.executor is not None
+            ]
+
+        queue_entries = []
+        results = self.match_queue_entry_by_name(
+            revs, self.iter_active(), self.iter_done()
+        )
+        for rev, queue_entry in results.items():
+            if queue_entry is None:
+                if self.match_queue_entry_by_name({rev}, self.iter_queued()).get(rev):
+                    raise DvcException(
+                        f"Experiment '{rev}' is in queue but has not been started"
+                    )
+                raise UnresolvedQueueExpNamesError([rev])
+            queue_entries.append(queue_entry)
+
+            # By default, follow all revs
+            if follow:
+                ui.write(
+                    f"Following logs for experiment '{rev}'. Use Ctrl+C to stop "
+                    "following logs (experiment execution will continue).\n"
                 )
-            raise UnresolvedQueueExpNamesError([rev])
-        if follow:
-            ui.write(
-                f"Following logs for experiment '{rev}'. Use Ctrl+C to stop "
-                "following logs (experiment execution will continue).\n"
-            )
+                try:
+                    # TODO: follow multiple revs
+                    self.follow(queue_entry)
+                except KeyboardInterrupt:
+                    pass
+                return
             try:
-                self.follow(queue_entry)
-            except KeyboardInterrupt:
-                pass
-            return
-        try:
-            proc_info = self.proc[queue_entry.stash_rev]
-        except KeyError:
-            raise DvcException(  # noqa: B904
-                f"No output logs found for experiment '{rev}'"
-            )
-        with open(
-            proc_info.stdout, encoding=encoding or locale.getpreferredencoding()
-        ) as fobj:
-            ui.write(fobj.read())
+                proc_info = self.proc[queue_entry.stash_rev]
+            except KeyError:
+                raise DvcException(  # noqa: B904
+                    f"No output logs found for experiment '{rev}'"
+                )
+            with open(
+                proc_info.stdout, encoding=encoding or locale.getpreferredencoding()
+            ) as fobj:
+                ui.write(fobj.read())
 
     def worker_status(self) -> dict[str, list[dict]]:
         """Return the current active celery worker"""

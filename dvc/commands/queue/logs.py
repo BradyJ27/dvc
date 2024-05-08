@@ -9,9 +9,10 @@ logger = logger.getChild(__name__)
 class CmdQueueLogs(CmdBase):
     """Show output logs for a queued experiment."""
 
+    # Allow this to take multiple revs, by default pass all exps
     def run(self):
         self.repo.experiments.celery_queue.logs(
-            rev=self.args.task,
+            revs=self.args.task,
             encoding=self.args.encoding,
             follow=self.args.follow,
         )
@@ -45,5 +46,7 @@ def add_parser(queue_subparsers, parent_parser):
         ),
         action="store_true",
     )
-    queue_logs_parser.add_argument("task", help="Task to show.", metavar="<task>")
+    queue_logs_parser.add_argument(
+        "task", nargs="*", help="Task to show.", metavar="<task>"
+    )
     queue_logs_parser.set_defaults(func=CmdQueueLogs)
